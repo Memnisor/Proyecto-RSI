@@ -1,0 +1,37 @@
+% ============================================================
+% Generado automáticamente por fn_tabla.py
+% Ticker : GSPC
+% Tipo   : significancia
+% Uso en tu artículo: \input{tabla_significancia_GSPC.tex}
+%
+% Requiere en el preámbulo:
+%   \usepackage{booktabs}
+%   \usepackage{caption}
+% ============================================================
+\begin{table}[htbp]
+    \centering
+    \caption{Significancia estadística (t-test) --- GSPC}
+    \label{tab:sig_gspc}
+    \small
+    \begin{tabular}{llllrrrrrrrr}
+        \toprule
+        \textbf{RSI} & \textbf{Banda} & \textbf{Se\~{n}al} & \textbf{N} & \textbf{1d} & \textbf{3d} & \textbf{5d} & \textbf{10d} & \textbf{30d} & \textbf{60d} & \textbf{90d} \\
+        \midrule
+        RSI(7) & 20/80 & BUY & 6 &  &  &  &  &  & ** & ** \\
+        RSI(7) & 20/80 & SELL & 25 &  & *** & *** & * & *** & ** & *** \\
+        RSI(7) & 30/70 & BUY & 51 &  &  & ** & *** & *** & *** & *** \\
+        RSI(7) & 30/70 & SELL & 66 & ** & ** & *** & *** & ** & ** & *** \\
+        RSI(7) & 10/90 & SELL & 1 &  &  &  &  &  &  &  \\
+        \midrule
+        RSI(14) & 20/80 & SELL & 2 &  &  &  &  &  &  &  \\
+        RSI(14) & 30/70 & BUY & 10 & * & ** & ** & *** & ** & *** & *** \\
+        RSI(14) & 30/70 & SELL & 33 & *** & *** & ** & *** & * & *** & *** \\
+        \midrule
+        RSI(20) & 30/70 & BUY & 1 &  &  &  &  &  &  &  \\
+        RSI(20) & 30/70 & SELL & 19 &  &  &  & * & *** & *** & *** \\
+        \midrule
+        RSI(30) & 30/70 & BUY & 1 &  &  &  &  &  &  &  \\
+        RSI(30) & 30/70 & SELL & 2 &  &  &  &  &  &  &  \\
+        \bottomrule
+    \end{tabular}
+\end{table}
