@@ -422,3 +422,383 @@ def exportar_latex(df: pd.DataFrame,
         f.write(latex)
 
     print(f"  💾 LaTeX exportado:  {nombre_input}")
+
+
+# =============================================================================
+#  FUNCIÓN 4: tabla_ranking
+#  Uso: se llama una vez por mercado desde el archivo maestro
+#  Genera UNA tabla consolidada con todas las combinaciones rankeadas
+#  por 3 índices de efectividad distintos tomados de la literatura
+# =============================================================================
+def tabla_ranking(resultados: dict,
+                  periodos: list,
+                  bandas: list,
+                  dias_futuro: list,
+                  ticker: str = "",
+                  horizonte: int = 30) -> pd.DataFrame:
+    """
+    Genera una tabla ranking con todas las combinaciones (periodo × banda × señal)
+    ordenadas por 3 índices de efectividad distintos.
+
+    ¿POR QUÉ 3 ÍNDICES DISTINTOS?
+    ──────────────────────────────
+    La literatura no tiene consenso sobre cómo medir la efectividad de una
+    estrategia de trading. Cada índice prioriza algo diferente:
+
+    ÍNDICE 1 — Performance Score (Brock, Lakonishok & LeBaron, 1992)
+        Foco: retorno ajustado por win rate
+        Score = Retorno_promedio × (WinRate / 100)
+        Interpretación: ¿cuánto gano en promedio ponderando por la frecuencia
+        de acierto? Un retorno alto con win rate bajo penaliza más que con
+        el índice 2.
+        Referencia: Brock, W., Lakonishok, J., & LeBaron, B. (1992).
+        "Simple technical trading rules and the stochastic properties of
+        stock returns." Journal of Finance, 47(5), 1731-1764.
+
+    ÍNDICE 2 — Profit Factor adaptado (Kaufman, 2013)
+        Foco: consistencia estadística
+        Score = WinRate × 0.50 + Significancia × 0.30 + Retorno_norm × 0.20
+        Interpretación: ¿qué tan confiable es la estrategia? Prioriza
+        que el win rate sea alto y que el resultado sea estadísticamente
+        significativo. Útil para implementación en algoritmos.
+        Referencia: Kaufman, P. (2013). "Trading Systems and Methods."
+        Wiley, 5th edition. Capítulo 2: Measuring Performance.
+
+    ÍNDICE 3 — Sharpe-like Score (Lo, 2002)
+        Foco: retorno ajustado por riesgo
+        Score = Retorno_promedio / Volatilidad_retornos × √(252/horizonte)
+        Interpretación: ¿cuánto retorno obtengo por unidad de riesgo?
+        Análogo al Sharpe Ratio pero aplicado a las señales del RSI.
+        Un score > 0.5 es comparable a un buen fondo de inversión.
+        Referencia: Lo, A. W. (2002). "The statistics of Sharpe ratios."
+        Financial Analysts Journal, 58(4), 36-52.
+
+    Parámetros
+    ----------
+    resultados  : dict   Diccionario maestro resultados[periodo][banda][clave]
+    periodos    : list   Lista de períodos RSI analizados
+    bandas      : list   Lista de tuplas (sobreventa, sobrecompra)
+    dias_futuro : list   Horizontes temporales disponibles
+    ticker      : str    Nombre del activo (para título y archivo)
+    horizonte   : int    Horizonte temporal para el ranking (default: 30 días)
+                         Debe estar en dias_futuro
+
+    Retorna
+    -------
+    pd.DataFrame con todas las combinaciones rankeadas, columnas:
+        RSI, Banda, Señal, N
+        Retorno_%     → retorno promedio a 'horizonte' días
+        WinRate_%     → win rate a 'horizonte' días
+        Volatilidad   → desviación estándar de los retornos
+        Sig           → significancia estadística (estrellas)
+        Score_BLL     → Índice 1 (Brock, Lakonishok & LeBaron)
+        Score_Kaufman → Índice 2 (Kaufman)
+        Score_Sharpe  → Índice 3 (Lo / Sharpe-like)
+        Ranking_BLL   → posición en el ranking según índice 1
+        Ranking_K     → posición en el ranking según índice 2
+        Ranking_S     → posición en el ranking según índice 3
+        Consenso      → promedio de los 3 rankings (menor = mejor)
+        Recomendacion → etiqueta cualitativa basada en Consenso
+    """
+    col = f"ret_{horizonte}d"   # columna de retorno al horizonte elegido
+
+    # Verificar que el horizonte está disponible
+    if horizonte not in dias_futuro:
+        print(f"  ⚠️  Horizonte {horizonte}d no está en dias_futuro={dias_futuro}")
+        return pd.DataFrame()
+
+    filas = []   # acumulador de filas del ranking
+
+    # ── Recorrer todas las combinaciones ─────────────────────────────────────
+    for periodo in periodos:
+        for sv, sc in bandas:
+            clave = f"{sv}/{sc}"
+            datos = resultados.get(periodo, {}).get(clave, {})
+            tbl   = datos.get("tabla_rendimientos", pd.DataFrame())
+
+            if tbl.empty or "signal" not in tbl.columns:
+                continue
+
+            for tipo in ["BUY", "SELL"]:
+                sub = tbl[tbl["signal"] == tipo]
+
+                # Mínimo 5 señales para incluir en el ranking
+                # (menos de 5 no es estadísticamente representativo)
+                if len(sub) < 5:
+                    continue
+
+                vals = sub[col].dropna() if col in sub.columns else pd.Series()
+                if len(vals) < 5:
+                    continue
+
+                # ── Métricas base ─────────────────────────────────────────────
+                retorno    = round(vals.mean(), 2)          # retorno promedio
+                winrate    = round((vals > 0).mean() * 100, 1)  # % ganadores
+                volatilidad = round(vals.std(), 2)          # desviación estándar
+
+                # ── T-test para significancia ─────────────────────────────────
+                alt = "greater" if tipo == "BUY" else "less"
+                _, pval = stats.ttest_1samp(vals, popmean=0, alternative=alt)
+
+                # Convertir p-valor a estrellas Y a valor numérico para el score
+                if pval < 0.01:
+                    sig_str = "***"
+                    sig_num = 1.00    # máxima significancia
+                elif pval < 0.05:
+                    sig_str = "**"
+                    sig_num = 0.66
+                elif pval < 0.10:
+                    sig_str = "*"
+                    sig_num = 0.33
+                else:
+                    sig_str = ""
+                    sig_num = 0.00    # no significativo
+
+                # ── ÍNDICE 1: Brock, Lakonishok & LeBaron (1992) ─────────────
+                # Score = Retorno × (WinRate / 100)
+                # Penaliza estrategias con win rate bajo aunque el retorno sea alto
+                # Para SELL, el retorno negativo es bueno → invertimos el signo
+                retorno_ajustado = retorno if tipo == "BUY" else -retorno
+                score_bll = round(retorno_ajustado * (winrate / 100), 3)
+
+                # ── ÍNDICE 2: Kaufman (2013) — Profit Factor adaptado ─────────
+                # Score = WinRate×0.50 + Significancia×0.30 + Retorno_norm×0.20
+                # Retorno normalizado: lo mapeamos al rango [0, 100] usando
+                # una función sigmoide suave para no penalizar extremos
+                # Retorno > 5% → muy bueno, retorno < -5% → muy malo
+                retorno_norm = 50 + (retorno_ajustado / 5) * 25
+                retorno_norm = max(0, min(100, retorno_norm))  # clamp [0,100]
+                score_kaufman = round(
+                    winrate    * 0.50 +
+                    sig_num    * 0.30 * 100 +   # × 100 para llevar a escala [0,100]
+                    retorno_norm * 0.20,
+                    2
+                )
+
+                # ── ÍNDICE 3: Lo (2002) — Sharpe-like ────────────────────────
+                # Score = (Retorno / Volatilidad) × √(252 / horizonte)
+                # √(252/horizonte): anualiza el ratio (252 días hábiles/año)
+                # Si volatilidad = 0 o muy pequeña, ponemos NaN
+                if volatilidad > 0.01:
+                    factor_anual = np.sqrt(252 / horizonte)
+                    score_sharpe = round(
+                        (retorno_ajustado / volatilidad) * factor_anual, 3
+                    )
+                else:
+                    score_sharpe = np.nan
+
+                filas.append({
+                    "RSI":        f"RSI({periodo})",
+                    "Banda":      clave,
+                    "Señal":      tipo,
+                    "N":          len(sub),
+                    "Retorno_%":  retorno,
+                    "WinRate_%":  winrate,
+                    "Volatilidad": volatilidad,
+                    "Sig":        sig_str,
+                    "Score_BLL":     score_bll,
+                    "Score_Kaufman": score_kaufman,
+                    "Score_Sharpe":  score_sharpe,
+                })
+
+    if not filas:
+        print(f"  ⚠️  Sin combinaciones con N≥5 para el ranking de {ticker}.")
+        return pd.DataFrame()
+
+    df = pd.DataFrame(filas)
+
+    # ── Calcular rankings (1 = mejor) ────────────────────────────────────────
+    # Para BLL y Kaufman: mayor score = mejor → rank ascendente=False
+    # Para Sharpe: mayor score = mejor → igual
+    df["Ranking_BLL"] = df["Score_BLL"].rank(ascending=False,
+                                               method="min", na_option="bottom").astype(int)
+    df["Ranking_K"]   = df["Score_Kaufman"].rank(ascending=False,
+                                                  method="min", na_option="bottom").astype(int)
+    df["Ranking_S"]   = df["Score_Sharpe"].rank(ascending=False,
+                                                 method="min", na_option="bottom").astype(int)
+
+    # Consenso: promedio de los 3 rankings (menor consenso = más consistente)
+    df["Consenso"] = round(
+        (df["Ranking_BLL"] + df["Ranking_K"] + df["Ranking_S"]) / 3, 1
+    )
+
+    # ── Etiqueta de recomendación ─────────────────────────────────────────────
+    # Basada en el ranking de consenso relativo al total de combinaciones
+    n_total = len(df)
+
+    def etiquetar(consenso):
+        pct = consenso / n_total   # posición relativa en el ranking
+        if pct <= 0.20:
+            return "⭐ MUY RECOMENDADA"
+        elif pct <= 0.40:
+            return "✅ RECOMENDADA"
+        elif pct <= 0.60:
+            return "⚠️  NEUTRAL"
+        elif pct <= 0.80:
+            return "❌ DÉBIL"
+        else:
+            return "🚫 NO RECOMENDADA"
+
+    df["Recomendacion"] = df["Consenso"].apply(etiquetar)
+
+    # Ordenar por consenso (menor = más recomendada)
+    df = df.sort_values("Consenso").reset_index(drop=True)
+
+    # ── Imprimir en consola ───────────────────────────────────────────────────
+    sep = "=" * 90
+    print(f"\n{sep}")
+    print(f"  {ticker}  —  TABLA RANKING  |  Horizonte: {horizonte} días")
+    print(f"  Índices: BLL=Brock et al.(1992)  |  K=Kaufman(2013)  |  S=Lo(2002)")
+    print(sep)
+
+    # Columnas para mostrar en consola (compacto)
+    cols_consola = ["RSI", "Banda", "Señal", "N",
+                    "Retorno_%", "WinRate_%", "Sig",
+                    "Score_BLL", "Score_Kaufman", "Score_Sharpe",
+                    "Consenso", "Recomendacion"]
+    print(df[cols_consola].to_string(index=False))
+    print()
+
+    # ── Exportar ──────────────────────────────────────────────────────────────
+    ticker_safe = ticker.replace("^", "").replace("/", "-")
+
+    # Excel: nueva hoja en el archivo maestro existente
+    # (se usa mode="a" para agregar sin borrar las hojas anteriores)
+    nombre_xlsx = f"tabla_maestra_{ticker_safe}.xlsx"
+    try:
+        with pd.ExcelWriter(nombre_xlsx, engine="openpyxl",
+                            mode="a", if_sheet_exists="replace") as writer:
+            df.to_excel(writer, sheet_name=f"Ranking_{horizonte}d", index=False)
+        print(f"  💾 Ranking agregado al Excel: {nombre_xlsx} "
+              f"(hoja: Ranking_{horizonte}d)")
+    except Exception as e:
+        # Si el archivo no existe todavía, crear uno nuevo
+        df.to_excel(nombre_xlsx, sheet_name=f"Ranking_{horizonte}d",
+                    index=False)
+        print(f"  💾 Ranking exportado: {nombre_xlsx}")
+
+    # LaTeX: tabla de ranking para el artículo
+    exportar_latex_ranking(df, ticker_safe, horizonte)
+
+    return df   # retorna el DataFrame para uso posterior si se necesita
+
+
+# =============================================================================
+#  FUNCIÓN 5: exportar_latex_ranking
+#  Uso: llamada internamente por tabla_ranking
+#  Genera el .tex de la tabla de ranking con las 3 columnas de score
+# =============================================================================
+def exportar_latex_ranking(df: pd.DataFrame,
+                            ticker_safe: str,
+                            horizonte: int) -> None:
+    """
+    Genera el archivo .tex de la tabla ranking lista para \input{} en LaTeX.
+
+    La tabla incluye:
+        RSI | Banda | Señal | N | Retorno% | WinRate% | Sig |
+        Score_BLL | Score_K | Score_S | Consenso | Recomendación
+
+    Nota sobre la nota al pie:
+        Se agrega automáticamente una nota explicando los 3 índices,
+        usando \\footnotesize en LaTeX para que no ocupe demasiado espacio.
+    """
+    cols_tex = ["RSI", "Banda", "Señal", "N",
+                "Retorno_%", "WinRate_%", "Sig",
+                "Score_BLL", "Score_Kaufman", "Score_Sharpe",
+                "Consenso", "Recomendacion"]
+
+    # Formato: l=izquierda para texto, r=derecha para números, c=centrado para sig
+    fmt_cols = "lllr" + "rrc" + "rrrc" + "l"
+
+    caption = (f"Ranking de efectividad de combinaciones RSI --- {ticker_safe} "
+               f"(horizonte: {horizonte} días)")
+    label   = f"tab:ranking_{ticker_safe.lower()}_{horizonte}d"
+
+    # Encabezado de columnas
+    header = (
+        "\\textbf{RSI} & \\textbf{Banda} & \\textbf{Se\\~{n}al} & \\textbf{N} & "
+        "\\textbf{Ret\\%} & \\textbf{WR\\%} & \\textbf{Sig} & "
+        "\\textbf{$S_{BLL}$} & \\textbf{$S_K$} & \\textbf{$S_S$} & "
+        "\\textbf{Cons.} & \\textbf{Recomendaci\\'{o}n} \\\\"
+    )
+
+    filas_tex  = []
+    ultimo_rsi = None
+
+    for _, row in df.iterrows():
+        # Separador visual por periodo RSI
+        if row["RSI"] != ultimo_rsi and ultimo_rsi is not None:
+            filas_tex.append("\\midrule")
+        ultimo_rsi = row["RSI"]
+
+        # Formatear Score_Sharpe (puede ser NaN)
+        s_sharpe = (f"{row['Score_Sharpe']:.3f}"
+                    if pd.notna(row['Score_Sharpe']) else "---")
+
+        # Limpiar emojis de la recomendación para LaTeX
+        # LaTeX no soporta emojis directamente
+        rec = (row["Recomendacion"]
+               .replace("⭐ ", "").replace("✅ ", "").replace("⚠️  ", "")
+               .replace("❌ ", "").replace("🚫 ", ""))
+
+        celdas = [
+            str(row["RSI"]),
+            str(row["Banda"]),
+            str(row["Señal"]),
+            str(int(row["N"])),
+            f"{row['Retorno_%']:.2f}",
+            f"{row['WinRate_%']:.1f}",
+            str(row["Sig"]),
+            f"{row['Score_BLL']:.3f}",
+            f"{row['Score_Kaufman']:.2f}",
+            s_sharpe,
+            f"{row['Consenso']:.1f}",
+            rec,
+        ]
+        filas_tex.append(" & ".join(celdas) + " \\\\")
+
+    cuerpo = "\n        ".join(filas_tex)
+
+    nombre_input = f"tabla_ranking_{ticker_safe}_{horizonte}d.tex"
+    latex = f"""% ============================================================
+% Tabla Ranking de Efectividad RSI
+% Ticker  : {ticker_safe}
+% Horizonte: {horizonte} días
+% Uso: \\input{{{nombre_input}}}
+%
+% Requiere en el preámbulo:
+%   \\usepackage{{booktabs}}
+%   \\usepackage{{caption}}
+%   \\usepackage{{threeparttable}}  % para la nota al pie de tabla
+% ============================================================
+\\begin{{table}}[htbp]
+    \\centering
+    \\small
+    \\caption{{{caption}}}
+    \\label{{{label}}}
+    \\begin{{threeparttable}}
+    \\begin{{tabular}}{{{fmt_cols}}}
+        \\toprule
+        {header}
+        \\midrule
+        {cuerpo}
+        \\bottomrule
+    \\end{{tabular}}
+    \\begin{{tablenotes}}
+        \\footnotesize
+        \\item $S_{{BLL}}$: Score Brock, Lakonishok \\& LeBaron (1992):
+              Retorno $\\times$ WinRate. \\
+        \\item $S_K$: Score Kaufman (2013):
+              WinRate$\\times$0.50 + Sig$\\times$0.30 + Ret\\_norm$\\times$0.20. \\
+        \\item $S_S$: Score Lo (2002), Sharpe-like:
+              $(\\bar{{r}} / \\sigma) \\times \\sqrt{{252/{horizonte}}}$. \\
+        \\item Consenso: promedio de los 3 rankings (menor = m\\'{a}s recomendada).
+        \\item Sig: *** $p<0.01$, ** $p<0.05$, * $p<0.10$ (t-test una cola).
+    \\end{{tablenotes}}
+    \\end{{threeparttable}}
+\\end{{table}}
+"""
+
+    with open(nombre_input, "w", encoding="utf-8") as f:
+        f.write(latex)
+    print(f"  💾 LaTeX ranking exportado: {nombre_input}")

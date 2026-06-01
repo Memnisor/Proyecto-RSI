@@ -36,6 +36,7 @@ from fn_descargar     import descargar_datos
 from fn_calcular_rsi  import calcular_rsi, calcular_ma_rsi
 from fn_senales       import detectar_senales
 from fn_rendimientos  import calcular_rendimientos_futuros
+#from fn_tabla import tabla_estadisticas, tabla_comparativa_maestra, tabla_ranking_efectividad
 from fn_tabla         import tabla_estadisticas, tabla_comparativa_maestra
 from fn_sharpe        import calcular_sharpe
 from fn_benchmark     import calcular_benchmark, imprimir_benchmark
